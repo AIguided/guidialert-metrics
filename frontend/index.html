@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IoT Zone Tracker</title>
+    <style>
+      :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+      body { margin: 0; background: #0b1220; color: #e6eefc; }
+      .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+      .card { background: #111b33; border: 1px solid #223055; border-radius: 12px; padding: 16px 16px 8px; }
+      h1 { margin: 0 0 12px; font-size: 20px; }
+      .sub { opacity: 0.8; margin: 0 0 18px; }
+      .row { display:flex; gap:12px; align-items:center; flex-wrap: wrap; margin-bottom: 12px; }
+      input { background:#0b1220; border:1px solid #223055; color:#e6eefc; padding:8px 10px; border-radius:8px; }
+      button { background:#3b82f6; border:none; color:white; padding:9px 12px; border-radius:8px; cursor:pointer; }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      a { color: #93c5fd; }
+      .err { color: #fecaca; margin-top: 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>IoT Zone Tracker</h1>
+        <p class="sub">Total time spent per zone (last 24h)</p>
+        <div id="root"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

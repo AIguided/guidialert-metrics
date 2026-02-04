@@ -1,0 +1,233 @@
+import os
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+
+import psycopg2
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from psycopg2.extras import RealDictCursor
+
+
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
+DB_NAME = os.getenv("DB_NAME", "iot_tracker")
+DB_USER = os.getenv("DB_USER", "iotuser")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "iotpass")
+
+STALE_THRESHOLD_MINUTES = int(os.getenv("STALE_THRESHOLD_MINUTES", "30"))
+DEFAULT_SITE_ID = os.getenv("DEFAULT_SITE_ID", "site-001")
+
+app = FastAPI(title="IoT Zone Tracker API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"] ,
+    allow_headers=["*"],
+)
+
+
+@contextmanager
+def get_conn():
+    conn = psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        cursor_factory=RealDictCursor,
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@app.get("/healthz")
+def healthz():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 AS ok;")
+            row = cur.fetchone()
+    return {"ok": bool(row and row.get("ok") == 1)}
+
+
+@app.get("/metrics/most-visited")
+def most_visited(hours: int = 24, siteId: str | None = None):
+    if hours <= 0 or hours > 24 * 30:
+        raise HTTPException(status_code=400, detail="hours must be between 1 and 720")
+
+    site_id = siteId or DEFAULT_SITE_ID
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT zh.zone_id,
+                       z.zone_name,
+                       COALESCE(SUM(EXTRACT(EPOCH FROM zh.duration)), 0)::bigint AS total_seconds
+                FROM zone_history zh
+                                JOIN zones z ON z.site_id = zh.site_id AND z.zone_id = zh.zone_id
+                                WHERE zh.site_id = %s
+                                    AND zh.start_time > NOW() - (%s || ' hours')::interval
+                  AND zh.end_time IS NOT NULL
+                GROUP BY zh.zone_id, z.zone_name
+                ORDER BY total_seconds DESC;
+                """,
+                                (site_id, str(hours)),
+            )
+            rows = cur.fetchall() or []
+
+    return {
+        "siteId": site_id,
+        "windowHours": hours,
+        "items": [
+            {
+                "zoneId": r["zone_id"],
+                "zoneName": r["zone_name"],
+                "totalSeconds": int(r["total_seconds"]),
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/metrics/transitions")
+def transitions(limit: int = 50, siteId: str | None = None):
+    if limit <= 0 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+
+    site_id = siteId or DEFAULT_SITE_ID
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH ordered AS (
+                  SELECT device_id,
+                         zone_id AS current_zone,
+                         LEAD(zone_id) OVER (PARTITION BY device_id ORDER BY start_time) AS next_zone
+                  FROM zone_history
+                                    WHERE site_id = %s
+                )
+                SELECT current_zone,
+                       next_zone,
+                       COUNT(*)::bigint AS frequency
+                FROM ordered
+                WHERE next_zone IS NOT NULL
+                GROUP BY current_zone, next_zone
+                ORDER BY frequency DESC
+                LIMIT %s;
+                """,
+                                (site_id, limit),
+            )
+            rows = cur.fetchall() or []
+
+    return {
+                "siteId": site_id,
+        "items": [
+            {
+                "currentZone": r["current_zone"],
+                "nextZone": r["next_zone"],
+                "frequency": int(r["frequency"]),
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/device/{device_id}/history")
+def device_history(device_id: str, limit: int = 200, siteId: str | None = None):
+    if limit <= 0 or limit > 2000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 2000")
+
+    site_id = siteId or DEFAULT_SITE_ID
+
+    stale_cutoff = now_utc() - timedelta(minutes=STALE_THRESHOLD_MINUTES)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT device_id, device_name, last_seen
+                FROM devices
+                WHERE site_id = %s AND device_id = %s;
+                """,
+                (site_id, device_id),
+            )
+            device = cur.fetchone()
+            if not device:
+                raise HTTPException(status_code=404, detail="device not found")
+
+            cur.execute(
+                """
+                SELECT zh.id,
+                       zh.zone_id,
+                       z.zone_name,
+                       zh.start_time,
+                       zh.end_time
+                FROM zone_history zh
+                JOIN zones z ON z.site_id = zh.site_id AND z.zone_id = zh.zone_id
+                WHERE zh.site_id = %s AND zh.device_id = %s
+                ORDER BY zh.start_time DESC
+                LIMIT %s;
+                """,
+                (site_id, device_id, limit),
+            )
+            visits = cur.fetchall() or []
+
+    last_seen = device.get("last_seen")
+    if last_seen is not None and last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+
+    items = []
+    for v in visits:
+        start_time = v["start_time"]
+        end_time = v["end_time"]
+        if start_time is not None and start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        if end_time is not None and end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+
+        is_open = end_time is None
+        is_active = False
+        effective_end = end_time
+
+        if is_open and last_seen is not None:
+            is_active = last_seen >= stale_cutoff
+            if not is_active:
+                effective_end = last_seen
+
+        duration_seconds = None
+        if effective_end is not None and start_time is not None:
+            duration_seconds = int(max(0, (effective_end - start_time).total_seconds()))
+
+        items.append(
+            {
+                "id": v["id"],
+                "zoneId": v["zone_id"],
+                "zoneName": v["zone_name"],
+                "startTime": start_time.isoformat() if start_time else None,
+                "endTime": end_time.isoformat() if end_time else None,
+                "effectiveEndTime": effective_end.isoformat() if effective_end else None,
+                "durationSeconds": duration_seconds,
+                "isOpen": is_open,
+                "isActive": is_active,
+            }
+        )
+
+    return {
+        "device": {
+            "siteId": site_id,
+            "deviceId": device["device_id"],
+            "deviceName": device["device_name"],
+            "lastSeen": last_seen.isoformat() if last_seen else None,
+            "staleThresholdMinutes": STALE_THRESHOLD_MINUTES,
+        },
+        "items": items,
+    }
