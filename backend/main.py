@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg2
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from psycopg2.extras import RealDictCursor
 
 
@@ -48,6 +49,26 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+@app.on_event("startup")
+def ensure_schema():
+    # Lightweight migration for existing databases.
+    with get_conn() as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;")
+            cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;")
+            cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS z DOUBLE PRECISION;")
+
+
+class ZoneUpsert(BaseModel):
+    siteId: str = Field(default=DEFAULT_SITE_ID, min_length=1)
+    zoneId: str = Field(min_length=1)
+    zoneName: str = Field(min_length=1)
+    x: float | None = None
+    y: float | None = None
+    z: float | None = None
+
+
 @app.get("/healthz")
 def healthz():
     with get_conn() as conn:
@@ -55,6 +76,98 @@ def healthz():
             cur.execute("SELECT 1 AS ok;")
             row = cur.fetchone()
     return {"ok": bool(row and row.get("ok") == 1)}
+
+
+@app.get("/zones")
+def list_zones(siteId: str | None = None):
+    site_id = siteId or DEFAULT_SITE_ID
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT site_id, zone_id, zone_name, x, y, z
+                FROM zones
+                WHERE site_id = %s
+                ORDER BY zone_id ASC;
+                """,
+                (site_id,),
+            )
+            rows = cur.fetchall() or []
+
+    return {
+        "siteId": site_id,
+        "items": [
+            {
+                "siteId": r["site_id"],
+                "zoneId": r["zone_id"],
+                "zoneName": r["zone_name"],
+                "x": r.get("x"),
+                "y": r.get("y"),
+                "z": r.get("z"),
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/zones")
+def upsert_zone(zone: ZoneUpsert):
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO zones (site_id, zone_id, zone_name, x, y, z)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (site_id, zone_id)
+                    DO UPDATE SET
+                        zone_name = EXCLUDED.zone_name,
+                        x = EXCLUDED.x,
+                        y = EXCLUDED.y,
+                        z = EXCLUDED.z;
+                    """,
+                    (zone.siteId, zone.zoneId, zone.zoneName, zone.x, zone.y, zone.z),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {"ok": True}
+
+
+@app.post("/zones/bulk")
+def bulk_upsert_zones(zones: list[ZoneUpsert]):
+    if len(zones) == 0:
+        return {"ok": True, "count": 0}
+    if len(zones) > 5000:
+        raise HTTPException(status_code=400, detail="too many zones in one request")
+
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                for zone in zones:
+                    cur.execute(
+                        """
+                        INSERT INTO zones (site_id, zone_id, zone_name, x, y, z)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (site_id, zone_id)
+                        DO UPDATE SET
+                            zone_name = EXCLUDED.zone_name,
+                            x = EXCLUDED.x,
+                            y = EXCLUDED.y,
+                            z = EXCLUDED.z;
+                        """,
+                        (zone.siteId, zone.zoneId, zone.zoneName, zone.x, zone.y, zone.z),
+                    )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {"ok": True, "count": len(zones)}
 
 
 @app.get("/metrics/most-visited")

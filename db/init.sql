@@ -6,6 +6,9 @@ CREATE TABLE IF NOT EXISTS zones (
     site_id VARCHAR(50) NOT NULL,
     zone_id VARCHAR(50) NOT NULL,
     zone_name TEXT NOT NULL,
+    x DOUBLE PRECISION,
+    y DOUBLE PRECISION,
+    z DOUBLE PRECISION,
     PRIMARY KEY (site_id, zone_id)
 );
 
@@ -47,12 +50,12 @@ ON zone_history(site_id, device_id)
 WHERE (end_time IS NULL);
 
 -- Insert sample zones for testing
-INSERT INTO zones (site_id, zone_id, zone_name) VALUES
-    ('site-001', 'zone-A', 'Entrance Hall'),
-    ('site-001', 'zone-B', 'Main Office'),
-    ('site-001', 'zone-C', 'Conference Room'),
-    ('site-001', 'zone-D', 'Cafeteria'),
-    ('site-001', 'zone-E', 'Parking Lot')
+INSERT INTO zones (site_id, zone_id, zone_name, x, y, z) VALUES
+    ('site-001', 'zone-A', 'Entrance Hall', 0, 0, 0),
+    ('site-001', 'zone-B', 'Main Office', 10, 0, 0),
+    ('site-001', 'zone-C', 'Conference Room', 10, 5, 0),
+    ('site-001', 'zone-D', 'Cafeteria', 0, 5, 0),
+    ('site-001', 'zone-E', 'Parking Lot', -10, 0, 0)
 ON CONFLICT (site_id, zone_id) DO NOTHING;
 
 -- Insert sample devices for testing

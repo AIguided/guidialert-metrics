@@ -10,7 +10,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./volumes/postgres/data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U iotuser -d iot_tracker"]
@@ -29,8 +29,8 @@ services:
       - "9001:9001"
     volumes:
       - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
-      - mosquitto_data:/mosquitto/data
-      - mosquitto_log:/mosquitto/log
+      - ./volumes/mosquitto/data:/mosquitto/data
+      - ./volumes/mosquitto/log:/mosquitto/log
     networks:
       - iot-network
 
@@ -88,16 +88,11 @@ services:
       dockerfile: Dockerfile
     container_name: iot-frontend
     ports:
-      - "3001:80"
+      - "3000:80"
     depends_on:
       - backend
     networks:
       - iot-network
-
-volumes:
-  postgres_data:
-  mosquitto_data:
-  mosquitto_log:
 
 networks:
   iot-network:
