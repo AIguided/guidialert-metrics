@@ -5,6 +5,10 @@
 **/__pycache__/
 **/*.pyc
 .venv/
+.python-version
+**/.uv/
+
+# uv lockfiles are committed (do not ignore uv.lock)
 
 # Node/Vite
 frontend/node_modules/

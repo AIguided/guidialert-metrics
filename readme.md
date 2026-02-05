@@ -16,6 +16,17 @@ This project is an IoT-based tracking system that monitors `deviceId` movements 
 * **Backend:** FastAPI (Python) - Serves metrics via JSON API.
 * **Frontend:** React with Chart.js (or Grafana) - Displays stay-duration heatmaps and analytics.
 
+## Running (Dev by default)
+
+This repo is set up so `docker compose up -d` runs in **dev mode** by default (code bind mounts + FastAPI reload + Vite dev server).
+
+- Dev (default): `docker compose up -d`
+    - UI: `http://localhost:3000`
+    - API docs: `http://localhost:8000/docs`
+
+- Prod-like: `docker compose -f docker-compose.yml --profile prod up -d --build`
+    - UI served by nginx at `http://localhost:3000`
+
 ## 2. Database Schema (PostgreSQL)
 
 The database must follow this structure to ensure data integrity and query performance.

@@ -87,6 +87,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: iot-frontend
+    profiles: ["prod"]
     ports:
       - "3000:80"
     depends_on:

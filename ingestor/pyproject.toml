@@ -1,0 +1,11 @@
+[project]
+name = "iot-zone-tracker-ingestor"
+version = "0.1.0"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+  "paho-mqtt==2.1.0",
+  "psycopg2-binary==2.9.9",
+]
+
+[tool.uv]
+# Keep lockfile-only workflow; no dev deps yet.
