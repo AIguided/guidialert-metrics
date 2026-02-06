@@ -20,6 +20,32 @@ CREATE TABLE IF NOT EXISTS devices (
     PRIMARY KEY (site_id, device_id)
 );
 
+-- Anchor positions (current snapshot) + history
+CREATE TABLE IF NOT EXISTS anchors (
+    site_id VARCHAR(50) NOT NULL,
+    anchor_id VARCHAR(50) NOT NULL,
+    anchor_name TEXT NOT NULL,
+    x DOUBLE PRECISION,
+    y DOUBLE PRECISION,
+    z DOUBLE PRECISION,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (site_id, anchor_id)
+);
+
+CREATE TABLE IF NOT EXISTS anchor_history (
+    site_id VARCHAR(50) NOT NULL,
+    id BIGSERIAL NOT NULL,
+    anchor_id VARCHAR(50) NOT NULL,
+    x DOUBLE PRECISION,
+    y DOUBLE PRECISION,
+    z DOUBLE PRECISION,
+    source TEXT,
+    observed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (site_id, id),
+    CONSTRAINT anchor_history_anchor_fk FOREIGN KEY (site_id, anchor_id)
+        REFERENCES anchors(site_id, anchor_id)
+);
+
 -- The State-Tracking Table (partitioned by site_id)
 CREATE TABLE IF NOT EXISTS zone_history (
     site_id VARCHAR(50) NOT NULL,
@@ -43,6 +69,9 @@ CREATE TABLE IF NOT EXISTS zone_history_default
 -- Indexing for performance
 CREATE INDEX IF NOT EXISTS idx_site_device_end_time ON zone_history(site_id, device_id) WHERE (end_time IS NULL);
 CREATE INDEX IF NOT EXISTS idx_site_start_time ON zone_history(site_id, start_time);
+
+CREATE INDEX IF NOT EXISTS idx_anchor_history_latest
+ON anchor_history(site_id, anchor_id, observed_at DESC);
 
 -- Prevent two workers from creating two "open" visits for the same device
 CREATE UNIQUE INDEX IF NOT EXISTS uq_open_visit_per_device

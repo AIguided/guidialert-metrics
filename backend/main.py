@@ -69,6 +69,21 @@ class ZoneUpsert(BaseModel):
     z: float | None = None
 
 
+class AnchorUpsert(BaseModel):
+    siteId: str = Field(default=DEFAULT_SITE_ID, min_length=1)
+    anchorId: str = Field(min_length=1)
+    anchorName: str = Field(min_length=1)
+    x: float | None = None
+    y: float | None = None
+    z: float | None = None
+    source: str | None = None
+
+
+def require_any_coord(x: float | None, y: float | None, z: float | None):
+    if x is None and y is None and z is None:
+        raise HTTPException(status_code=400, detail="at least one of x,y,z is required")
+
+
 @app.get("/healthz")
 def healthz():
     with get_conn() as conn:
@@ -135,6 +150,139 @@ def upsert_zone(zone: ZoneUpsert):
             raise
 
     return {"ok": True}
+
+
+@app.get("/anchors")
+def list_anchors(siteId: str | None = None):
+    site_id = siteId or DEFAULT_SITE_ID
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT site_id, anchor_id, anchor_name, x, y, z, updated_at
+                FROM anchors
+                WHERE site_id = %s
+                ORDER BY anchor_id ASC;
+                """,
+                (site_id,),
+            )
+            rows = cur.fetchall() or []
+
+    return {
+        "siteId": site_id,
+        "items": [
+            {
+                "siteId": r["site_id"],
+                "anchorId": r["anchor_id"],
+                "anchorName": r["anchor_name"],
+                "x": r.get("x"),
+                "y": r.get("y"),
+                "z": r.get("z"),
+                "updatedAt": r["updated_at"].isoformat() if r.get("updated_at") else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/anchors")
+def upsert_anchor(anchor: AnchorUpsert):
+    require_any_coord(anchor.x, anchor.y, anchor.z)
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO anchors (site_id, anchor_id, anchor_name, x, y, z, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (site_id, anchor_id)
+                    DO UPDATE SET
+                        anchor_name = EXCLUDED.anchor_name,
+                        x = EXCLUDED.x,
+                        y = EXCLUDED.y,
+                        z = EXCLUDED.z,
+                        updated_at = NOW();
+                    """,
+                    (
+                        anchor.siteId,
+                        anchor.anchorId,
+                        anchor.anchorName,
+                        anchor.x,
+                        anchor.y,
+                        anchor.z,
+                    ),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO anchor_history (site_id, anchor_id, x, y, z, source, observed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW());
+                    """,
+                    (
+                        anchor.siteId,
+                        anchor.anchorId,
+                        anchor.x,
+                        anchor.y,
+                        anchor.z,
+                        anchor.source,
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {"ok": True}
+
+
+@app.get("/anchors/{anchor_id}/history")
+def anchor_history(anchor_id: str, limit: int = 200, siteId: str | None = None):
+    if limit <= 0 or limit > 2000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 2000")
+
+    site_id = siteId or DEFAULT_SITE_ID
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT anchor_name
+                FROM anchors
+                WHERE site_id = %s AND anchor_id = %s;
+                """,
+                (site_id, anchor_id),
+            )
+            anchor = cur.fetchone()
+            if not anchor:
+                raise HTTPException(status_code=404, detail="anchor not found")
+
+            cur.execute(
+                """
+                SELECT id, x, y, z, source, observed_at
+                FROM anchor_history
+                WHERE site_id = %s AND anchor_id = %s
+                ORDER BY observed_at DESC
+                LIMIT %s;
+                """,
+                (site_id, anchor_id, limit),
+            )
+            rows = cur.fetchall() or []
+
+    return {
+        "siteId": site_id,
+        "anchorId": anchor_id,
+        "anchorName": anchor["anchor_name"],
+        "items": [
+            {
+                "id": r["id"],
+                "x": r.get("x"),
+                "y": r.get("y"),
+                "z": r.get("z"),
+                "source": r.get("source"),
+                "observedAt": r["observed_at"].isoformat() if r.get("observed_at") else None,
+            }
+            for r in rows
+        ],
+    }
 
 
 @app.post("/zones/bulk")
