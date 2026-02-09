@@ -173,6 +173,49 @@ def upsert_zone(zone: ZoneUpsert):
 
     return {"ok": True}
 
+@app.get("/zones/searchnearby")
+def search_nearby_zones(x: float, y: float, z: float, siteId: str | None = None):
+
+    ### find the closest zone to the given x,y,z coordinates for the specified site
+    site_id = siteId or DEFAULT_SITE_ID
+    with get_conn() as conn:
+        # get the closest zone by calculating Euclidean distance
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT site_id, zone_id, zone_name, x, y, z, audio_id,
+                    SQRT(POWER(COALESCE(x, 0) - %s, 2) + POWER(COALESCE(y, 0) - %s, 2) + POWER(COALESCE(z, 0) - %s, 2)) AS distance
+                FROM zones
+                WHERE site_id = %s
+                ORDER BY distance ASC
+                LIMIT 1;
+                """,
+                (x, y, z, site_id),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return {
+            "siteId": site_id,
+            "zone": None,
+            "message": "No zones found for this site"
+        }
+
+    return {
+        "siteId": site_id,
+        "zone": {
+            "siteId": row["site_id"],
+            "zoneId": row["zone_id"],
+            "zoneName": row["zone_name"],
+            "x": row.get("x"),
+            "y": row.get("y"),
+            "z": row.get("z"),
+            "audioId": row.get("audio_id"),
+            "distance": row.get("distance"),
+        }
+    }
+
+        
 
 @app.get("/anchors")
 def list_anchors(siteId: str | None = None):
