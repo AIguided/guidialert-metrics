@@ -40,6 +40,14 @@ export default function App() {
 
   const [anchorForm, setAnchorForm] = useState({ anchorId: '', anchorName: '', x: '', y: '', z: '' })
 
+  // Floorplan state
+  const [floorplans, setFloorplans] = useState([])
+  const [floorplansError, setFloorplansError] = useState(null)
+  const [floorplansLoading, setFloorplansLoading] = useState(false)
+  const [floorplanForm, setFloorplanForm] = useState({ floorId: '', floorName: '' })
+  const [floorplanImage, setFloorplanImage] = useState(null)
+  const [selectedFloorplan, setSelectedFloorplan] = useState(null)
+
   function startEditZone(z) {
     setZoneForm({
       zoneId: z.zoneId ?? '',
@@ -171,10 +179,92 @@ export default function App() {
     }
   }
 
+  // Floorplan functions
+  async function loadFloorplans() {
+    setFloorplansLoading(true)
+    setFloorplansError(null)
+    try {
+      const res = await fetch('/api/floorplans')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      setFloorplans(json.items || [])
+    } catch (e) {
+      setFloorplansError(String(e?.message ?? e))
+    } finally {
+      setFloorplansLoading(false)
+    }
+  }
+
+  function startEditFloorplan(f) {
+    setFloorplanForm({
+      floorId: f.floorId ?? '',
+      floorName: f.floorName ?? '',
+    })
+    setFloorplanImage(null)
+  }
+
+  async function submitFloorplan(e) {
+    e.preventDefault()
+    setFloorplansError(null)
+    try {
+      const floorId = floorplanForm.floorId.trim()
+      const floorName = floorplanForm.floorName.trim()
+      if (!floorId || !floorName) throw new Error('floorId and floorName are required')
+
+      const formData = new FormData()
+      formData.append('floorId', floorId)
+      formData.append('floorName', floorName)
+      if (floorplanImage) {
+        formData.append('image', floorplanImage)
+      }
+
+      const res = await fetch('/api/floorplans', {
+        method: 'POST',
+        body: formData,
+      })
+      if (!res.ok) {
+        const t = await res.text()
+        throw new Error(t || `HTTP ${res.status}`)
+      }
+      setFloorplanForm({ floorId: '', floorName: '' })
+      setFloorplanImage(null)
+      await loadFloorplans()
+    } catch (e2) {
+      setFloorplansError(String(e2?.message ?? e2))
+    }
+  }
+
+  async function deleteFloorplan(floorId) {
+    if (!confirm(`Delete floorplan "${floorId}"?`)) return
+    setFloorplansError(null)
+    try {
+      const res = await fetch(`/api/floorplans/${encodeURIComponent(floorId)}`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) {
+        const t = await res.text()
+        throw new Error(t || `HTTP ${res.status}`)
+      }
+      if (selectedFloorplan?.floorId === floorId) {
+        setSelectedFloorplan(null)
+      }
+      await loadFloorplans()
+    } catch (e2) {
+      setFloorplansError(String(e2?.message ?? e2))
+    }
+  }
+
+  function viewFloorplanImage(f) {
+    if (f.hasImage) {
+      setSelectedFloorplan(f)
+    }
+  }
+
   useEffect(() => {
     load()
     loadZones()
     loadAnchors()
+    loadFloorplans()
   }, [])
 
   const chart = useMemo(() => {
@@ -391,6 +481,119 @@ export default function App() {
           </tbody>
         </table>
       </div>
+
+      <hr style={{ border: 'none', borderTop: '1px solid #223055', margin: '18px 0' }} />
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Floorplan Admin</div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>Upload floorplan images. Click a row to view the image.</div>
+        </div>
+        <button onClick={loadFloorplans} disabled={floorplansLoading}>{floorplansLoading ? 'Loading…' : 'Refresh floorplans'}</button>
+      </div>
+
+      {floorplansError && <div className="err">Floorplans error: {floorplansError}</div>}
+
+      <form onSubmit={submitFloorplan} style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input
+          placeholder="floorId (e.g. floor-1)"
+          value={floorplanForm.floorId}
+          onChange={(e) => setFloorplanForm((s) => ({ ...s, floorId: e.target.value }))}
+        />
+        <input
+          placeholder="floorName"
+          value={floorplanForm.floorName}
+          onChange={(e) => setFloorplanForm((s) => ({ ...s, floorName: e.target.value }))}
+          style={{ minWidth: 180 }}
+        />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', background: '#334155', padding: '6px 12px', borderRadius: 6 }}>
+          <span>{floorplanImage ? floorplanImage.name : 'Choose image...'}</span>
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            onChange={(e) => setFloorplanImage(e.target.files?.[0] || null)}
+            style={{ display: 'none' }}
+          />
+        </label>
+        <button type="submit">Save floorplan</button>
+        <button
+          type="button"
+          onClick={() => { setFloorplanForm({ floorId: '', floorName: '' }); setFloorplanImage(null) }}
+          style={{ background: '#334155' }}
+        >
+          Clear
+        </button>
+      </form>
+
+      <div style={{ marginTop: 12, overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.9 }}>
+              <th style={{ padding: '8px 6px' }}>floorId</th>
+              <th style={{ padding: '8px 6px' }}>floorName</th>
+              <th style={{ padding: '8px 6px' }}>hasImage</th>
+              <th style={{ padding: '8px 6px' }}>updated</th>
+              <th style={{ padding: '8px 6px' }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(floorplans || []).map((f) => (
+              <tr
+                key={`${f.siteId}:${f.floorId}`}
+                style={{
+                  borderTop: '1px solid #223055',
+                  cursor: f.hasImage ? 'pointer' : 'default',
+                  background: selectedFloorplan?.floorId === f.floorId ? '#1e3a5f' : 'transparent',
+                }}
+                onClick={() => viewFloorplanImage(f)}
+              >
+                <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>{f.floorId}</td>
+                <td style={{ padding: '8px 6px' }}>{f.floorName}</td>
+                <td style={{ padding: '8px 6px' }}>{f.hasImage ? 'Yes' : 'No'}</td>
+                <td style={{ padding: '8px 6px' }}>{f.updatedAt ? new Date(f.updatedAt).toLocaleString() : ''}</td>
+                <td style={{ padding: '8px 6px', display: 'flex', gap: 6 }}>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); startEditFloorplan(f) }}
+                    style={{ background: '#22c55e' }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); deleteFloorplan(f.floorId) }}
+                    style={{ background: '#ef4444' }}
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {selectedFloorplan && (
+        <div style={{ marginTop: 16, padding: 12, background: '#1e293b', borderRadius: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>
+              {selectedFloorplan.floorName} ({selectedFloorplan.floorId})
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedFloorplan(null)}
+              style={{ background: '#64748b', padding: '4px 10px', fontSize: 12 }}
+            >
+              Close
+            </button>
+          </div>
+          <img
+            src={`/api/floorplans/${encodeURIComponent(selectedFloorplan.floorId)}/image`}
+            alt={selectedFloorplan.floorName}
+            style={{ maxWidth: '100%', maxHeight: 500, borderRadius: 6, display: 'block' }}
+          />
+        </div>
+      )}
     </div>
   )
 }

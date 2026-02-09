@@ -46,6 +46,18 @@ CREATE TABLE IF NOT EXISTS anchor_history (
         REFERENCES anchors(site_id, anchor_id)
 );
 
+CREATE TABLE IF NOT EXISTS floorplan (
+    site_id VARCHAR(50) NOT NULL,
+    floor_id VARCHAR(50) NOT NULL,
+    floor_name TEXT NOT NULL,
+    image_data BYTEA,
+    image_mime_type TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (site_id, floor_id)
+);
+
+
 -- The State-Tracking Table (partitioned by site_id)
 CREATE TABLE IF NOT EXISTS zone_history (
     site_id VARCHAR(50) NOT NULL,

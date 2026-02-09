@@ -1,10 +1,12 @@
 import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import base64
 
 import psycopg2
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from psycopg2.extras import RealDictCursor
 
@@ -58,6 +60,23 @@ def ensure_schema():
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;")
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;")
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS z DOUBLE PRECISION;")
+            # Floorplan table migrations
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS floorplan (
+                    site_id VARCHAR(50) NOT NULL,
+                    floor_id VARCHAR(50) NOT NULL,
+                    floor_name TEXT NOT NULL,
+                    image_data BYTEA,
+                    image_mime_type TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (site_id, floor_id)
+                );
+            """)
+            cur.execute("ALTER TABLE IF EXISTS floorplan ADD COLUMN IF NOT EXISTS image_data BYTEA;")
+            cur.execute("ALTER TABLE IF EXISTS floorplan ADD COLUMN IF NOT EXISTS image_mime_type TEXT;")
+            cur.execute("ALTER TABLE IF EXISTS floorplan ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;")
+            cur.execute("ALTER TABLE IF EXISTS floorplan ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;")
 
 
 class ZoneUpsert(BaseModel):
@@ -492,3 +511,168 @@ def device_history(device_id: str, limit: int = 200, siteId: str | None = None):
         },
         "items": items,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Floorplan endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@app.get("/floorplans")
+def list_floorplans(siteId: str | None = None):
+    site_id = siteId or DEFAULT_SITE_ID
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT site_id, floor_id, floor_name, image_mime_type,
+                       created_at, updated_at,
+                       (image_data IS NOT NULL) AS has_image
+                FROM floorplan
+                WHERE site_id = %s
+                ORDER BY floor_id ASC;
+                """,
+                (site_id,),
+            )
+            rows = cur.fetchall() or []
+
+    return {
+        "siteId": site_id,
+        "items": [
+            {
+                "siteId": r["site_id"],
+                "floorId": r["floor_id"],
+                "floorName": r["floor_name"],
+                "imageMimeType": r.get("image_mime_type"),
+                "hasImage": r.get("has_image", False),
+                "createdAt": r["created_at"].isoformat() if r.get("created_at") else None,
+                "updatedAt": r["updated_at"].isoformat() if r.get("updated_at") else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/floorplans")
+async def upsert_floorplan(
+    floorId: str = Form(...),
+    floorName: str = Form(...),
+    siteId: str = Form(default=None),
+    image: UploadFile | None = File(default=None),
+):
+    site_id = siteId or DEFAULT_SITE_ID
+    floor_id = floorId.strip()
+    floor_name = floorName.strip()
+
+    if not floor_id or not floor_name:
+        raise HTTPException(status_code=400, detail="floorId and floorName are required")
+
+    image_data = None
+    image_mime_type = None
+
+    if image and image.filename:
+        content_type = image.content_type or "application/octet-stream"
+        if content_type not in ALLOWED_IMAGE_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid image type: {content_type}. Allowed: {', '.join(ALLOWED_IMAGE_TYPES)}",
+            )
+        image_data = await image.read()
+        if len(image_data) > MAX_IMAGE_SIZE:
+            raise HTTPException(status_code=400, detail=f"Image too large. Max size: {MAX_IMAGE_SIZE // (1024*1024)} MB")
+        image_mime_type = content_type
+
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                if image_data is not None:
+                    # Upsert with new image
+                    cur.execute(
+                        """
+                        INSERT INTO floorplan (site_id, floor_id, floor_name, image_data, image_mime_type, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (site_id, floor_id)
+                        DO UPDATE SET
+                            floor_name = EXCLUDED.floor_name,
+                            image_data = EXCLUDED.image_data,
+                            image_mime_type = EXCLUDED.image_mime_type,
+                            updated_at = NOW();
+                        """,
+                        (site_id, floor_id, floor_name, psycopg2.Binary(image_data), image_mime_type),
+                    )
+                else:
+                    # Upsert without changing image
+                    cur.execute(
+                        """
+                        INSERT INTO floorplan (site_id, floor_id, floor_name, updated_at)
+                        VALUES (%s, %s, %s, NOW())
+                        ON CONFLICT (site_id, floor_id)
+                        DO UPDATE SET
+                            floor_name = EXCLUDED.floor_name,
+                            updated_at = NOW();
+                        """,
+                        (site_id, floor_id, floor_name),
+                    )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {"ok": True}
+
+
+@app.get("/floorplans/{floor_id}/image")
+def get_floorplan_image(floor_id: str, siteId: str | None = None):
+    site_id = siteId or DEFAULT_SITE_ID
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT image_data, image_mime_type
+                FROM floorplan
+                WHERE site_id = %s AND floor_id = %s;
+                """,
+                (site_id, floor_id),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Floorplan not found")
+
+    if not row.get("image_data"):
+        raise HTTPException(status_code=404, detail="No image uploaded for this floorplan")
+
+    return Response(
+        content=bytes(row["image_data"]),
+        media_type=row.get("image_mime_type") or "application/octet-stream",
+    )
+
+
+@app.delete("/floorplans/{floor_id}")
+def delete_floorplan(floor_id: str, siteId: str | None = None):
+    site_id = siteId or DEFAULT_SITE_ID
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM floorplan
+                    WHERE site_id = %s AND floor_id = %s;
+                    """,
+                    (site_id, floor_id),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Floorplan not found")
+
+    return {"ok": True}
