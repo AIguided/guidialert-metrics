@@ -93,3 +93,20 @@ INSERT INTO devices (site_id, device_id, device_name, last_seen) VALUES
     ('site-001', 'device-002', 'Tracker Beta', NULL),
     ('site-001', 'device-003', 'Tracker Gamma', NULL)
 ON CONFLICT (site_id, device_id) DO NOTHING;
+
+-- Audio files table for storing uploaded audio
+CREATE TABLE IF NOT EXISTS audio_files (
+    id BIGSERIAL PRIMARY KEY,
+    site_id VARCHAR(50) NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    file_size BIGINT NOT NULL,
+    mime_type VARCHAR(100) NOT NULL,
+    file_data BYTEA NOT NULL,
+    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    uploaded_by VARCHAR(100),
+    description TEXT
+);
+
+-- Index for faster lookups by site
+CREATE INDEX IF NOT EXISTS idx_audio_files_site_id ON audio_files(site_id);
+CREATE INDEX IF NOT EXISTS idx_audio_files_uploaded_at ON audio_files(site_id, uploaded_at DESC);

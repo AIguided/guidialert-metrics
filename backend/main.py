@@ -3,8 +3,9 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import psycopg2
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from psycopg2.extras import RealDictCursor
 
@@ -58,6 +59,23 @@ def ensure_schema():
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;")
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;")
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS z DOUBLE PRECISION;")
+
+            # Create audio_files table if it doesn't exist
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS audio_files (
+                    id BIGSERIAL PRIMARY KEY,
+                    site_id VARCHAR(50) NOT NULL,
+                    filename VARCHAR(255) NOT NULL,
+                    file_size BIGINT NOT NULL,
+                    mime_type VARCHAR(100) NOT NULL,
+                    file_data BYTEA NOT NULL,
+                    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    uploaded_by VARCHAR(100),
+                    description TEXT
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_audio_files_site_id ON audio_files(site_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_audio_files_uploaded_at ON audio_files(site_id, uploaded_at DESC);")
 
 
 class ZoneUpsert(BaseModel):
@@ -492,3 +510,222 @@ def device_history(device_id: str, limit: int = 200, siteId: str | None = None):
         },
         "items": items,
     }
+
+
+class QueryRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=10000)
+
+
+@app.post("/query")
+def execute_query(request: QueryRequest):
+    """Execute a SQL query and return results. Only SELECT queries are allowed."""
+    query = request.query.strip()
+
+    # Basic security check - only allow SELECT queries
+    query_upper = query.upper()
+    if not query_upper.startswith("SELECT"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only SELECT queries are allowed for security reasons"
+        )
+
+    # Block potentially dangerous keywords
+    dangerous_keywords = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE", "TRUNCATE"]
+    for keyword in dangerous_keywords:
+        if keyword in query_upper:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Query contains forbidden keyword: {keyword}"
+            )
+
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                rows = cur.fetchall() or []
+
+                # Get column names from cursor description
+                columns = [desc[0] for desc in cur.description] if cur.description else []
+
+                # Convert rows to list of dicts
+                results = []
+                for row in rows:
+                    result_row = {}
+                    for col_name, value in row.items():
+                        # Convert datetime objects to ISO format strings
+                        if isinstance(value, datetime):
+                            result_row[col_name] = value.isoformat()
+                        else:
+                            result_row[col_name] = value
+                    results.append(result_row)
+
+                return {
+                    "columns": columns,
+                    "rows": results,
+                    "rowCount": len(results)
+                }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Query execution failed: {str(e)}")
+
+
+@app.post("/audio/upload")
+async def upload_audio(
+    file: UploadFile = File(...),
+    siteId: str = Form(default=DEFAULT_SITE_ID),
+    description: str = Form(default=""),
+    uploadedBy: str = Form(default="")
+):
+    """Upload an audio file (.mp3, .wav) to the database."""
+    # Validate file type
+    allowed_types = ["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav"]
+    allowed_extensions = [".mp3", ".wav"]
+
+    file_ext = os.path.splitext(file.filename)[1].lower()
+
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only audio files are allowed (.mp3, .wav). Got: {file_ext}"
+        )
+
+    # Read file content
+    file_content = await file.read()
+    file_size = len(file_content)
+
+    # Limit file size to 50MB
+    max_size = 50 * 1024 * 1024  # 50MB
+    if file_size > max_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File size ({file_size} bytes) exceeds maximum allowed size (50MB)"
+        )
+
+    # Determine mime type
+    mime_type = file.content_type or "audio/mpeg"
+
+    try:
+        with get_conn() as conn:
+            conn.autocommit = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO audio_files (site_id, filename, file_size, mime_type, file_data, uploaded_by, description)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id, uploaded_at;
+                        """,
+                        (siteId, file.filename, file_size, mime_type, file_content, uploadedBy, description)
+                    )
+                    result = cur.fetchone()
+                conn.commit()
+
+                return {
+                    "ok": True,
+                    "id": result["id"],
+                    "filename": file.filename,
+                    "fileSize": file_size,
+                    "uploadedAt": result["uploaded_at"].isoformat() if result["uploaded_at"] else None
+                }
+            except Exception:
+                conn.rollback()
+                raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
+
+@app.get("/audio/list")
+def list_audio_files(siteId: str | None = None, limit: int = 100):
+    """List all uploaded audio files."""
+    site_id = siteId or DEFAULT_SITE_ID
+
+    if limit <= 0 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, site_id, filename, file_size, mime_type, uploaded_at, uploaded_by, description
+                FROM audio_files
+                WHERE site_id = %s
+                ORDER BY uploaded_at DESC
+                LIMIT %s;
+                """,
+                (site_id, limit)
+            )
+            rows = cur.fetchall() or []
+
+    return {
+        "siteId": site_id,
+        "items": [
+            {
+                "id": r["id"],
+                "siteId": r["site_id"],
+                "filename": r["filename"],
+                "fileSize": r["file_size"],
+                "mimeType": r["mime_type"],
+                "uploadedAt": r["uploaded_at"].isoformat() if r.get("uploaded_at") else None,
+                "uploadedBy": r.get("uploaded_by"),
+                "description": r.get("description")
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/audio/{audio_id}")
+def get_audio_file(audio_id: int, siteId: str | None = None):
+    """Download an audio file by ID."""
+    site_id = siteId or DEFAULT_SITE_ID
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT filename, file_data, mime_type
+                FROM audio_files
+                WHERE id = %s AND site_id = %s;
+                """,
+                (audio_id, site_id)
+            )
+            result = cur.fetchone()
+
+            if not result:
+                raise HTTPException(status_code=404, detail="Audio file not found")
+
+            return Response(
+                content=bytes(result["file_data"]),
+                media_type=result["mime_type"],
+                headers={
+                    "Content-Disposition": f'attachment; filename="{result["filename"]}"'
+                }
+            )
+
+
+@app.delete("/audio/{audio_id}")
+def delete_audio_file(audio_id: int, siteId: str | None = None):
+    """Delete an audio file by ID."""
+    site_id = siteId or DEFAULT_SITE_ID
+
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM audio_files
+                    WHERE id = %s AND site_id = %s
+                    RETURNING id;
+                    """,
+                    (audio_id, site_id)
+                )
+                result = cur.fetchone()
+
+                if not result:
+                    raise HTTPException(status_code=404, detail="Audio file not found")
+
+            conn.commit()
+            return {"ok": True, "id": audio_id}
+        except Exception:
+            conn.rollback()
+            raise

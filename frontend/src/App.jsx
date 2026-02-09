@@ -40,6 +40,18 @@ export default function App() {
 
   const [anchorForm, setAnchorForm] = useState({ anchorId: '', anchorName: '', x: '', y: '', z: '' })
 
+  const [queryInput, setQueryInput] = useState('')
+  const [queryResult, setQueryResult] = useState(null)
+  const [queryError, setQueryError] = useState(null)
+  const [queryLoading, setQueryLoading] = useState(false)
+
+  const [audioFiles, setAudioFiles] = useState([])
+  const [audioError, setAudioError] = useState(null)
+  const [audioLoading, setAudioLoading] = useState(false)
+  const [uploadFile, setUploadFile] = useState(null)
+  const [uploadDescription, setUploadDescription] = useState('')
+  const [uploading, setUploading] = useState(false)
+
   function startEditZone(z) {
     setZoneForm({
       zoneId: z.zoneId ?? '',
@@ -171,10 +183,110 @@ export default function App() {
     }
   }
 
+  async function executeQuery() {
+    if (!queryInput.trim()) {
+      setQueryError('Please enter a SQL query')
+      return
+    }
+
+    setQueryLoading(true)
+    setQueryError(null)
+    setQueryResult(null)
+    try {
+      const res = await fetch('/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: queryInput }),
+      })
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || `HTTP ${res.status}`)
+      }
+      const json = await res.json()
+      setQueryResult(json)
+    } catch (e) {
+      setQueryError(String(e?.message ?? e))
+    } finally {
+      setQueryLoading(false)
+    }
+  }
+
+  async function loadAudioFiles() {
+    setAudioLoading(true)
+    setAudioError(null)
+    try {
+      const res = await fetch('/api/audio/list')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      setAudioFiles(json.items || [])
+    } catch (e) {
+      setAudioError(String(e?.message ?? e))
+    } finally {
+      setAudioLoading(false)
+    }
+  }
+
+  async function uploadAudio(e) {
+    e.preventDefault()
+    if (!uploadFile) {
+      setAudioError('Please select a file')
+      return
+    }
+
+    setUploading(true)
+    setAudioError(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', uploadFile)
+      formData.append('description', uploadDescription)
+
+      const res = await fetch('/api/audio/upload', {
+        method: 'POST',
+        body: formData,
+      })
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || `HTTP ${res.status}`)
+      }
+      setUploadFile(null)
+      setUploadDescription('')
+      await loadAudioFiles()
+    } catch (e) {
+      setAudioError(String(e?.message ?? e))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function deleteAudio(id) {
+    if (!confirm('Are you sure you want to delete this audio file?')) return
+
+    setAudioError(null)
+    try {
+      const res = await fetch(`/api/audio/${id}`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || `HTTP ${res.status}`)
+      }
+      await loadAudioFiles()
+    } catch (e) {
+      setAudioError(String(e?.message ?? e))
+    }
+  }
+
+  function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B'
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  }
+
   useEffect(() => {
     load()
     loadZones()
     loadAnchors()
+    loadAudioFiles()
   }, [])
 
   const chart = useMemo(() => {
@@ -390,6 +502,184 @@ export default function App() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      <hr style={{ border: 'none', borderTop: '1px solid #223055', margin: '18px 0' }} />
+
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Query Test</div>
+        <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 12 }}>
+          Execute SQL queries to test the database. Only SELECT queries are allowed.
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexDirection: 'column' }}>
+          <textarea
+            placeholder="Enter SQL query (e.g., SELECT * FROM zones LIMIT 10)"
+            value={queryInput}
+            onChange={(e) => setQueryInput(e.target.value)}
+            style={{
+              width: '100%',
+              minHeight: 100,
+              padding: 8,
+              fontFamily: 'monospace',
+              fontSize: 13,
+              background: '#0f172a',
+              border: '1px solid #334155',
+              borderRadius: 4,
+              color: '#e2e8f0',
+              resize: 'vertical',
+            }}
+          />
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button onClick={executeQuery} disabled={queryLoading}>
+              {queryLoading ? 'Executing...' : 'Execute Query'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setQueryInput('')
+                setQueryResult(null)
+                setQueryError(null)
+              }}
+              style={{ background: '#334155' }}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        {queryError && <div className="err">Query error: {queryError}</div>}
+
+        {queryResult && (
+          <div>
+            <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
+              {queryResult.rowCount} row{queryResult.rowCount !== 1 ? 's' : ''} returned
+            </div>
+            <div style={{ overflowX: 'auto', maxHeight: 400, overflow: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead style={{ position: 'sticky', top: 0, background: '#0f172a' }}>
+                  <tr style={{ textAlign: 'left', opacity: 0.9 }}>
+                    {queryResult.columns.map((col) => (
+                      <th key={col} style={{ padding: '8px 6px', borderBottom: '2px solid #223055' }}>
+                        {col}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {queryResult.rows.map((row, idx) => (
+                    <tr key={idx} style={{ borderTop: '1px solid #223055' }}>
+                      {queryResult.columns.map((col) => (
+                        <td key={col} style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
+                          {row[col] == null ? (
+                            <span style={{ opacity: 0.5 }}>null</span>
+                          ) : (
+                            String(row[col])
+                          )}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <hr style={{ border: 'none', borderTop: '1px solid #223055', margin: '18px 0' }} />
+
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Audio Files</div>
+            <div style={{ fontSize: 12, opacity: 0.8 }}>Upload and manage audio files (.mp3, .wav)</div>
+          </div>
+          <button onClick={loadAudioFiles} disabled={audioLoading}>{audioLoading ? 'Loading...' : 'Refresh'}</button>
+        </div>
+
+        {audioError && <div className="err">Audio error: {audioError}</div>}
+
+        <form onSubmit={uploadAudio} style={{ marginTop: 12, display: 'flex', gap: 10, flexDirection: 'column' }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              type="file"
+              accept=".mp3,.wav,audio/mpeg,audio/wav"
+              onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+              style={{ flex: 1, minWidth: 200 }}
+            />
+            <input
+              placeholder="Description (optional)"
+              value={uploadDescription}
+              onChange={(e) => setUploadDescription(e.target.value)}
+              style={{ minWidth: 200 }}
+            />
+            <button type="submit" disabled={uploading || !uploadFile}>
+              {uploading ? 'Uploading...' : 'Upload'}
+            </button>
+          </div>
+          {uploadFile && (
+            <div style={{ fontSize: 12, opacity: 0.8 }}>
+              Selected: {uploadFile.name} ({formatFileSize(uploadFile.size)})
+            </div>
+          )}
+        </form>
+
+        <div style={{ marginTop: 12, overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', opacity: 0.9 }}>
+                <th style={{ padding: '8px 6px' }}>ID</th>
+                <th style={{ padding: '8px 6px' }}>Filename</th>
+                <th style={{ padding: '8px 6px' }}>Size</th>
+                <th style={{ padding: '8px 6px' }}>Description</th>
+                <th style={{ padding: '8px 6px' }}>Uploaded</th>
+                <th style={{ padding: '8px 6px' }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(audioFiles || []).map((audio) => (
+                <tr key={audio.id} style={{ borderTop: '1px solid #223055' }}>
+                  <td style={{ padding: '8px 6px' }}>{audio.id}</td>
+                  <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>{audio.filename}</td>
+                  <td style={{ padding: '8px 6px' }}>{formatFileSize(audio.fileSize)}</td>
+                  <td style={{ padding: '8px 6px' }}>{audio.description || '-'}</td>
+                  <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
+                    {audio.uploadedAt ? new Date(audio.uploadedAt).toLocaleString() : '-'}
+                  </td>
+                  <td style={{ padding: '8px 6px', display: 'flex', gap: 6 }}>
+                    <a
+                      href={`/api/audio/${audio.id}`}
+                      download
+                      style={{
+                        padding: '4px 8px',
+                        background: '#3b82f6',
+                        color: 'white',
+                        textDecoration: 'none',
+                        borderRadius: 4,
+                        fontSize: 11,
+                      }}
+                    >
+                      Download
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => deleteAudio(audio.id)}
+                      style={{ background: '#ef4444', padding: '4px 8px', fontSize: 11 }}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {audioFiles && audioFiles.length === 0 && (
+            <div style={{ padding: '20px', textAlign: 'center', opacity: 0.6, fontSize: 12 }}>
+              No audio files uploaded yet
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
