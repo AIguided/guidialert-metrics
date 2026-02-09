@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS zones (
     x DOUBLE PRECISION,
     y DOUBLE PRECISION,
     z DOUBLE PRECISION,
+    audio_id BIGINT,
     PRIMARY KEY (site_id, zone_id)
 );
 
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS anchors (
     x DOUBLE PRECISION,
     y DOUBLE PRECISION,
     z DOUBLE PRECISION,
+    audio_id BIGINT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (site_id, anchor_id)
 );
@@ -79,12 +81,12 @@ ON zone_history(site_id, device_id)
 WHERE (end_time IS NULL);
 
 -- Insert sample zones for testing
-INSERT INTO zones (site_id, zone_id, zone_name, x, y, z) VALUES
-    ('site-001', 'zone-A', 'Entrance Hall', 0, 0, 0),
-    ('site-001', 'zone-B', 'Main Office', 10, 0, 0),
-    ('site-001', 'zone-C', 'Conference Room', 10, 5, 0),
-    ('site-001', 'zone-D', 'Cafeteria', 0, 5, 0),
-    ('site-001', 'zone-E', 'Parking Lot', -10, 0, 0)
+INSERT INTO zones (site_id, zone_id, zone_name, x, y, z,audio_id) VALUES
+    ('site-001', 'zone-A', 'Entrance Hall', 0, 0, 0,NULL),
+    ('site-001', 'zone-B', 'Main Office', 10, 0, 0,NULL),
+    ('site-001', 'zone-C', 'Conference Room', 10, 5, 0,NULL),
+    ('site-001', 'zone-D', 'Cafeteria', 0, 5, 0,NULL),
+    ('site-001', 'zone-E', 'Parking Lot', -10, 0, 0,NULL)
 ON CONFLICT (site_id, zone_id) DO NOTHING;
 
 -- Insert sample devices for testing

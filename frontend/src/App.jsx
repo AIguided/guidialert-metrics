@@ -32,7 +32,7 @@ export default function App() {
   const [zonesError, setZonesError] = useState(null)
   const [zonesLoading, setZonesLoading] = useState(false)
 
-  const [zoneForm, setZoneForm] = useState({ zoneId: '', zoneName: '', x: '', y: '', z: '' })
+  const [zoneForm, setZoneForm] = useState({ zoneId: '', zoneName: '', x: '', y: '', z: '', audioId: '' })
 
   const [anchors, setAnchors] = useState([])
   const [anchorsError, setAnchorsError] = useState(null)
@@ -59,6 +59,7 @@ export default function App() {
       x: z.x ?? '',
       y: z.y ?? '',
       z: z.z ?? '',
+      audioId: z.audioId ?? '',
     })
   }
 
@@ -133,6 +134,7 @@ export default function App() {
         x: parseNum(zoneForm.x),
         y: parseNum(zoneForm.y),
         z: parseNum(zoneForm.z),
+        audioId: parseNum(zoneForm.audioId),
       }
       if (!body.zoneId || !body.zoneName) throw new Error('zoneId and zoneName are required')
 
@@ -145,7 +147,7 @@ export default function App() {
         const t = await res.text()
         throw new Error(t || `HTTP ${res.status}`)
       }
-      setZoneForm({ zoneId: '', zoneName: '', x: '', y: '', z: '' })
+      setZoneForm({ zoneId: '', zoneName: '', x: '', y: '', z: '', audioId: '' })
       await loadZones()
       await load()
     } catch (e2) {
@@ -385,10 +387,11 @@ export default function App() {
         <input placeholder="x" value={zoneForm.x} onChange={(e) => setZoneForm((s) => ({ ...s, x: e.target.value }))} />
         <input placeholder="y" value={zoneForm.y} onChange={(e) => setZoneForm((s) => ({ ...s, y: e.target.value }))} />
         <input placeholder="z" value={zoneForm.z} onChange={(e) => setZoneForm((s) => ({ ...s, z: e.target.value }))} />
+        <input placeholder="audioId" value={zoneForm.audioId} onChange={(e) => setZoneForm((s) => ({ ...s, audioId: e.target.value }))} />
         <button type="submit">Save zone</button>
         <button
           type="button"
-          onClick={() => setZoneForm({ zoneId: '', zoneName: '', x: '', y: '', z: '' })}
+          onClick={() => setZoneForm({ zoneId: '', zoneName: '', x: '', y: '', z: '', audioId: '' })}
           style={{ background: '#334155' }}
         >
           Clear
@@ -404,6 +407,7 @@ export default function App() {
               <th style={{ padding: '8px 6px' }}>x</th>
               <th style={{ padding: '8px 6px' }}>y</th>
               <th style={{ padding: '8px 6px' }}>z</th>
+              <th style={{ padding: '8px 6px' }}>audioId</th>
               <th style={{ padding: '8px 6px' }}></th>
             </tr>
           </thead>
@@ -415,6 +419,25 @@ export default function App() {
                 <td style={{ padding: '8px 6px' }}>{z.x ?? ''}</td>
                 <td style={{ padding: '8px 6px' }}>{z.y ?? ''}</td>
                 <td style={{ padding: '8px 6px' }}>{z.z ?? ''}</td>
+                <td style={{ padding: '8px 6px' }}>
+                  {z.audioId ? (
+                    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                      <span>{z.audioId}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const audio = new Audio(`/api/audio/${z.audioId}`)
+                          audio.play()
+                        }}
+                        style={{ background: '#10b981', padding: '2px 6px', fontSize: 10 }}
+                      >
+                        ▶
+                      </button>
+                    </div>
+                  ) : (
+                    '-'
+                  )}
+                </td>
                 <td style={{ padding: '8px 6px' }}>
                   <button
                     type="button"
@@ -638,18 +661,28 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {(audioFiles || []).map((audio) => (
-                <tr key={audio.id} style={{ borderTop: '1px solid #223055' }}>
-                  <td style={{ padding: '8px 6px' }}>{audio.id}</td>
-                  <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>{audio.filename}</td>
-                  <td style={{ padding: '8px 6px' }}>{formatFileSize(audio.fileSize)}</td>
-                  <td style={{ padding: '8px 6px' }}>{audio.description || '-'}</td>
+              {(audioFiles || []).map((audioFile) => (
+                <tr key={audioFile.id} style={{ borderTop: '1px solid #223055' }}>
+                  <td style={{ padding: '8px 6px' }}>{audioFile.id}</td>
+                  <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>{audioFile.filename}</td>
+                  <td style={{ padding: '8px 6px' }}>{formatFileSize(audioFile.fileSize)}</td>
+                  <td style={{ padding: '8px 6px' }}>{audioFile.description || '-'}</td>
                   <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
-                    {audio.uploadedAt ? new Date(audio.uploadedAt).toLocaleString() : '-'}
+                    {audioFile.uploadedAt ? new Date(audioFile.uploadedAt).toLocaleString() : '-'}
                   </td>
                   <td style={{ padding: '8px 6px', display: 'flex', gap: 6 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const audio = new Audio(`/api/audio/${audioFile.id}`)
+                        audio.play()
+                      }}
+                      style={{ background: '#10b981', padding: '4px 8px', fontSize: 11 }}
+                    >
+                      ▶ Play
+                    </button>
                     <a
-                      href={`/api/audio/${audio.id}`}
+                      href={`/api/audio/${audioFile.id}`}
                       download
                       style={{
                         padding: '4px 8px',
@@ -664,7 +697,7 @@ export default function App() {
                     </a>
                     <button
                       type="button"
-                      onClick={() => deleteAudio(audio.id)}
+                      onClick={() => deleteAudio(audioFile.id)}
                       style={{ background: '#ef4444', padding: '4px 8px', fontSize: 11 }}
                     >
                       Delete

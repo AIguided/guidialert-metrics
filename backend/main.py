@@ -59,6 +59,7 @@ def ensure_schema():
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;")
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;")
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS z DOUBLE PRECISION;")
+            cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS audio_id BIGINT;")
 
             # Create audio_files table if it doesn't exist
             cur.execute("""
@@ -85,6 +86,7 @@ class ZoneUpsert(BaseModel):
     x: float | None = None
     y: float | None = None
     z: float | None = None
+    audioId: int | None = None
 
 
 class AnchorUpsert(BaseModel):
@@ -118,7 +120,7 @@ def list_zones(siteId: str | None = None):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT site_id, zone_id, zone_name, x, y, z
+                SELECT site_id, zone_id, zone_name, x, y, z, audio_id
                 FROM zones
                 WHERE site_id = %s
                 ORDER BY zone_id ASC;
@@ -137,6 +139,7 @@ def list_zones(siteId: str | None = None):
                 "x": r.get("x"),
                 "y": r.get("y"),
                 "z": r.get("z"),
+                "audioId": r.get("audio_id"),
             }
             for r in rows
         ],
@@ -151,16 +154,17 @@ def upsert_zone(zone: ZoneUpsert):
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO zones (site_id, zone_id, zone_name, x, y, z)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    INSERT INTO zones (site_id, zone_id, zone_name, x, y, z, audio_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (site_id, zone_id)
                     DO UPDATE SET
                         zone_name = EXCLUDED.zone_name,
                         x = EXCLUDED.x,
                         y = EXCLUDED.y,
-                        z = EXCLUDED.z;
+                        z = EXCLUDED.z,
+                        audio_id = EXCLUDED.audio_id;
                     """,
-                    (zone.siteId, zone.zoneId, zone.zoneName, zone.x, zone.y, zone.z),
+                    (zone.siteId, zone.zoneId, zone.zoneName, zone.x, zone.y, zone.z, zone.audioId),
                 )
             conn.commit()
         except Exception:
@@ -317,16 +321,17 @@ def bulk_upsert_zones(zones: list[ZoneUpsert]):
                 for zone in zones:
                     cur.execute(
                         """
-                        INSERT INTO zones (site_id, zone_id, zone_name, x, y, z)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO zones (site_id, zone_id, zone_name, x, y, z, audio_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (site_id, zone_id)
                         DO UPDATE SET
                             zone_name = EXCLUDED.zone_name,
                             x = EXCLUDED.x,
                             y = EXCLUDED.y,
-                            z = EXCLUDED.z;
+                            z = EXCLUDED.z,
+                            audio_id = EXCLUDED.audio_id;
                         """,
-                        (zone.siteId, zone.zoneId, zone.zoneName, zone.x, zone.y, zone.z),
+                        (zone.siteId, zone.zoneId, zone.zoneName, zone.x, zone.y, zone.z, zone.audioId),
                     )
             conn.commit()
         except Exception:
@@ -704,13 +709,24 @@ def get_audio_file(audio_id: int, siteId: str | None = None):
 
 @app.delete("/audio/{audio_id}")
 def delete_audio_file(audio_id: int, siteId: str | None = None):
-    """Delete an audio file by ID."""
+    """Delete an audio file by ID and clean up references in zones table."""
     site_id = siteId or DEFAULT_SITE_ID
 
     with get_conn() as conn:
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
+                # First, set audio_id to NULL in zones table where it matches
+                cur.execute(
+                    """
+                    UPDATE zones
+                    SET audio_id = NULL
+                    WHERE site_id = %s AND audio_id = %s;
+                    """,
+                    (site_id, audio_id)
+                )
+
+                # Then delete the audio file
                 cur.execute(
                     """
                     DELETE FROM audio_files
@@ -726,6 +742,43 @@ def delete_audio_file(audio_id: int, siteId: str | None = None):
 
             conn.commit()
             return {"ok": True, "id": audio_id}
+        except Exception:
+            conn.rollback()
+            raise
+
+
+@app.post("/audio/cleanup-orphaned")
+def cleanup_orphaned_audio_references(siteId: str | None = None):
+    """Clean up zone audio_id references where the audio file no longer exists."""
+    site_id = siteId or DEFAULT_SITE_ID
+
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE zones
+                    SET audio_id = NULL
+                    WHERE site_id = %s
+                      AND audio_id IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM audio_files
+                          WHERE audio_files.id = zones.audio_id
+                            AND audio_files.site_id = zones.site_id
+                      )
+                    RETURNING zone_id;
+                    """,
+                    (site_id,)
+                )
+                cleaned_zones = cur.fetchall()
+            conn.commit()
+
+            return {
+                "ok": True,
+                "cleanedCount": len(cleaned_zones),
+                "cleanedZones": [row["zone_id"] for row in cleaned_zones]
+            }
         except Exception:
             conn.rollback()
             raise
