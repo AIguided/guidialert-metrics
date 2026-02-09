@@ -58,8 +58,10 @@ def ensure_schema():
         with conn.cursor() as cur:
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;")
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;")
-            cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS z DOUBLE PRECISION;")
+            cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS floor DOUBLE PRECISION;")
             cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS audio_id BIGINT;")
+            cur.execute("ALTER TABLE IF EXISTS zones ADD COLUMN IF NOT EXISTS floorplan_id VARCHAR(50);")
+            cur.execute("ALTER TABLE IF EXISTS anchors ADD COLUMN IF NOT EXISTS floor DOUBLE PRECISION;")
 
             # Create audio_files table if it doesn't exist
             cur.execute("""
@@ -78,6 +80,24 @@ def ensure_schema():
             cur.execute("CREATE INDEX IF NOT EXISTS idx_audio_files_site_id ON audio_files(site_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_audio_files_uploaded_at ON audio_files(site_id, uploaded_at DESC);")
 
+            # Create floorplan table if it doesn't exist
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS floorplan (
+                    site_id VARCHAR(50) NOT NULL,
+                    floorplan_id VARCHAR(50) NOT NULL,
+                    floor_name TEXT NOT NULL,
+                    image_data BYTEA,
+                    image_mime_type TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (site_id, floorplan_id)
+                );
+            """)
+            cur.execute("ALTER TABLE IF EXISTS floorplan ADD COLUMN IF NOT EXISTS image_data BYTEA;")
+            cur.execute("ALTER TABLE IF EXISTS floorplan ADD COLUMN IF NOT EXISTS image_mime_type TEXT;")
+            cur.execute("ALTER TABLE IF EXISTS floorplan ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;")
+            cur.execute("ALTER TABLE IF EXISTS floorplan ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;")
+
 
 class ZoneUpsert(BaseModel):
     siteId: str = Field(default=DEFAULT_SITE_ID, min_length=1)
@@ -85,8 +105,9 @@ class ZoneUpsert(BaseModel):
     zoneName: str = Field(min_length=1)
     x: float | None = None
     y: float | None = None
-    z: float | None = None
+    floor: float | None = None
     audioId: int | None = None
+    floorplanId: str | None = None
 
 
 class AnchorUpsert(BaseModel):
@@ -95,13 +116,13 @@ class AnchorUpsert(BaseModel):
     anchorName: str = Field(min_length=1)
     x: float | None = None
     y: float | None = None
-    z: float | None = None
+    floor: float | None = None
     source: str | None = None
 
 
-def require_any_coord(x: float | None, y: float | None, z: float | None):
-    if x is None and y is None and z is None:
-        raise HTTPException(status_code=400, detail="at least one of x,y,z is required")
+def require_any_coord(x: float | None, y: float | None, floor: float | None):
+    if x is None and y is None and floor is None:
+        raise HTTPException(status_code=400, detail="at least one of x,y,floor is required")
 
 
 @app.get("/healthz")
@@ -120,7 +141,7 @@ def list_zones(siteId: str | None = None):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT site_id, zone_id, zone_name, x, y, z, audio_id
+                SELECT site_id, zone_id, zone_name, x, y, floor, audio_id, floorplan_id
                 FROM zones
                 WHERE site_id = %s
                 ORDER BY zone_id ASC;
@@ -138,8 +159,9 @@ def list_zones(siteId: str | None = None):
                 "zoneName": r["zone_name"],
                 "x": r.get("x"),
                 "y": r.get("y"),
-                "z": r.get("z"),
+                "floor": r.get("floor"),
                 "audioId": r.get("audio_id"),
+                "floorplanId": r.get("floorplan_id"),
             }
             for r in rows
         ],
@@ -154,17 +176,18 @@ def upsert_zone(zone: ZoneUpsert):
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO zones (site_id, zone_id, zone_name, x, y, z, audio_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO zones (site_id, zone_id, zone_name, x, y, floor, audio_id, floorplan_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (site_id, zone_id)
                     DO UPDATE SET
                         zone_name = EXCLUDED.zone_name,
                         x = EXCLUDED.x,
                         y = EXCLUDED.y,
-                        z = EXCLUDED.z,
-                        audio_id = EXCLUDED.audio_id;
+                        floor = EXCLUDED.floor,
+                        audio_id = EXCLUDED.audio_id,
+                        floorplan_id = EXCLUDED.floorplan_id;
                     """,
-                    (zone.siteId, zone.zoneId, zone.zoneName, zone.x, zone.y, zone.z, zone.audioId),
+                    (zone.siteId, zone.zoneId, zone.zoneName, zone.x, zone.y, zone.floor, zone.audioId, zone.floorplanId),
                 )
             conn.commit()
         except Exception:
@@ -174,23 +197,23 @@ def upsert_zone(zone: ZoneUpsert):
     return {"ok": True}
 
 @app.get("/zones/searchnearby")
-def search_nearby_zones(x: float, y: float, z: float, siteId: str | None = None):
+def search_nearby_zones(x: float, y: float, floor: float, siteId: str | None = None):
 
-    ### find the closest zone to the given x,y,z coordinates for the specified site
+    ### find the closest zone to the given x,y,floor coordinates for the specified site
     site_id = siteId or DEFAULT_SITE_ID
     with get_conn() as conn:
         # get the closest zone by calculating Euclidean distance
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT site_id, zone_id, zone_name, x, y, z, audio_id,
-                    SQRT(POWER(COALESCE(x, 0) - %s, 2) + POWER(COALESCE(y, 0) - %s, 2) + POWER(COALESCE(z, 0) - %s, 2)) AS distance
+                SELECT site_id, zone_id, zone_name, x, y, floor, audio_id, floorplan_id,
+                    SQRT(POWER(COALESCE(x, 0) - %s, 2) + POWER(COALESCE(y, 0) - %s, 2) + POWER(COALESCE(floor, 0) - %s, 2)) AS distance
                 FROM zones
                 WHERE site_id = %s
                 ORDER BY distance ASC
                 LIMIT 1;
                 """,
-                (x, y, z, site_id),
+                (x, y, floor, site_id),
             )
             row = cur.fetchone()
 
@@ -209,8 +232,9 @@ def search_nearby_zones(x: float, y: float, z: float, siteId: str | None = None)
             "zoneName": row["zone_name"],
             "x": row.get("x"),
             "y": row.get("y"),
-            "z": row.get("z"),
+            "floor": row.get("floor"),
             "audioId": row.get("audio_id"),
+            "floorplanId": row.get("floorplan_id"),
             "distance": row.get("distance"),
         }
     }
@@ -224,7 +248,7 @@ def list_anchors(siteId: str | None = None):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT site_id, anchor_id, anchor_name, x, y, z, updated_at
+                SELECT site_id, anchor_id, anchor_name, x, y, floor, updated_at
                 FROM anchors
                 WHERE site_id = %s
                 ORDER BY anchor_id ASC;
@@ -242,7 +266,7 @@ def list_anchors(siteId: str | None = None):
                 "anchorName": r["anchor_name"],
                 "x": r.get("x"),
                 "y": r.get("y"),
-                "z": r.get("z"),
+                "floor": r.get("floor"),
                 "updatedAt": r["updated_at"].isoformat() if r.get("updated_at") else None,
             }
             for r in rows
@@ -252,21 +276,21 @@ def list_anchors(siteId: str | None = None):
 
 @app.post("/anchors")
 def upsert_anchor(anchor: AnchorUpsert):
-    require_any_coord(anchor.x, anchor.y, anchor.z)
+    require_any_coord(anchor.x, anchor.y, anchor.floor)
     with get_conn() as conn:
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO anchors (site_id, anchor_id, anchor_name, x, y, z, updated_at)
+                    INSERT INTO anchors (site_id, anchor_id, anchor_name, x, y, floor, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (site_id, anchor_id)
                     DO UPDATE SET
                         anchor_name = EXCLUDED.anchor_name,
                         x = EXCLUDED.x,
                         y = EXCLUDED.y,
-                        z = EXCLUDED.z,
+                        floor = EXCLUDED.floor,
                         updated_at = NOW();
                     """,
                     (
@@ -275,7 +299,7 @@ def upsert_anchor(anchor: AnchorUpsert):
                         anchor.anchorName,
                         anchor.x,
                         anchor.y,
-                        anchor.z,
+                        anchor.floor,
                     ),
                 )
                 cur.execute(
@@ -288,7 +312,7 @@ def upsert_anchor(anchor: AnchorUpsert):
                         anchor.anchorId,
                         anchor.x,
                         anchor.y,
-                        anchor.z,
+                        anchor.floor,
                         anchor.source,
                     ),
                 )
@@ -364,17 +388,18 @@ def bulk_upsert_zones(zones: list[ZoneUpsert]):
                 for zone in zones:
                     cur.execute(
                         """
-                        INSERT INTO zones (site_id, zone_id, zone_name, x, y, z, audio_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        INSERT INTO zones (site_id, zone_id, zone_name, x, y, floor, audio_id, floorplan_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (site_id, zone_id)
                         DO UPDATE SET
                             zone_name = EXCLUDED.zone_name,
                             x = EXCLUDED.x,
                             y = EXCLUDED.y,
-                            z = EXCLUDED.z,
-                            audio_id = EXCLUDED.audio_id;
+                            floor = EXCLUDED.floor,
+                            audio_id = EXCLUDED.audio_id,
+                            floorplan_id = EXCLUDED.floorplan_id;
                         """,
-                        (zone.siteId, zone.zoneId, zone.zoneName, zone.x, zone.y, zone.z, zone.audioId),
+                        (zone.siteId, zone.zoneId, zone.zoneName, zone.x, zone.y, zone.floor, zone.audioId, zone.floorplanId),
                     )
             conn.commit()
         except Exception:
@@ -825,3 +850,177 @@ def cleanup_orphaned_audio_references(siteId: str | None = None):
         except Exception:
             conn.rollback()
             raise
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Floorplan endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@app.get("/floorplans")
+def list_floorplans(siteId: str | None = None):
+    site_id = siteId or DEFAULT_SITE_ID
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT site_id, floorplan_id, floor_name, image_mime_type,
+                       created_at, updated_at,
+                       (image_data IS NOT NULL) AS has_image
+                FROM floorplan
+                WHERE site_id = %s
+                ORDER BY floorplan_id ASC;
+                """,
+                (site_id,),
+            )
+            rows = cur.fetchall() or []
+
+    return {
+        "siteId": site_id,
+        "items": [
+            {
+                "siteId": r["site_id"],
+                "floorplanId": r["floorplan_id"],
+                "floorName": r["floor_name"],
+                "imageMimeType": r.get("image_mime_type"),
+                "hasImage": r.get("has_image", False),
+                "createdAt": r["created_at"].isoformat() if r.get("created_at") else None,
+                "updatedAt": r["updated_at"].isoformat() if r.get("updated_at") else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/floorplans")
+async def upsert_floorplan(
+    floorplanId: str = Form(...),
+    floorName: str = Form(...),
+    siteId: str = Form(default=None),
+    image: UploadFile | None = File(default=None),
+):
+    site_id = siteId or DEFAULT_SITE_ID
+    floorplan_id = floorplanId.strip()
+    floor_name = floorName.strip()
+
+    if not floorplan_id or not floor_name:
+        raise HTTPException(status_code=400, detail="floorplanId and floorName are required")
+
+    image_data = None
+    image_mime_type = None
+
+    if image and image.filename:
+        content_type = image.content_type or "application/octet-stream"
+        if content_type not in ALLOWED_IMAGE_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid image type: {content_type}. Allowed: {', '.join(ALLOWED_IMAGE_TYPES)}",
+            )
+        image_data = await image.read()
+        if len(image_data) > MAX_IMAGE_SIZE:
+            raise HTTPException(status_code=400, detail=f"Image too large. Max size: {MAX_IMAGE_SIZE // (1024*1024)} MB")
+        image_mime_type = content_type
+
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                if image_data is not None:
+                    # Upsert with new image
+                    cur.execute(
+                        """
+                        INSERT INTO floorplan (site_id, floorplan_id, floor_name, image_data, image_mime_type, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (site_id, floorplan_id)
+                        DO UPDATE SET
+                            floor_name = EXCLUDED.floor_name,
+                            image_data = EXCLUDED.image_data,
+                            image_mime_type = EXCLUDED.image_mime_type,
+                            updated_at = NOW();
+                        """,
+                        (site_id, floorplan_id, floor_name, psycopg2.Binary(image_data), image_mime_type),
+                    )
+                else:
+                    # Upsert without changing image
+                    cur.execute(
+                        """
+                        INSERT INTO floorplan (site_id, floorplan_id, floor_name, updated_at)
+                        VALUES (%s, %s, %s, NOW())
+                        ON CONFLICT (site_id, floorplan_id)
+                        DO UPDATE SET
+                            floor_name = EXCLUDED.floor_name,
+                            updated_at = NOW();
+                        """,
+                        (site_id, floorplan_id, floor_name),
+                    )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {"ok": True}
+
+
+@app.get("/floorplans/{floorplan_id}/image")
+def get_floorplan_image(floorplan_id: str, siteId: str | None = None):
+    site_id = siteId or DEFAULT_SITE_ID
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT image_data, image_mime_type
+                FROM floorplan
+                WHERE site_id = %s AND floorplan_id = %s;
+                """,
+                (site_id, floorplan_id),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Floorplan not found")
+
+    if not row.get("image_data"):
+        raise HTTPException(status_code=404, detail="No image uploaded for this floorplan")
+
+    return Response(
+        content=bytes(row["image_data"]),
+        media_type=row.get("image_mime_type") or "application/octet-stream",
+    )
+
+
+@app.delete("/floorplans/{floorplan_id}")
+def delete_floorplan(floorplan_id: str, siteId: str | None = None):
+    site_id = siteId or DEFAULT_SITE_ID
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                # Clear floorplan_id from zones that reference this floorplan
+                cur.execute(
+                    """
+                    UPDATE zones
+                    SET floorplan_id = NULL
+                    WHERE site_id = %s AND floorplan_id = %s;
+                    """,
+                    (site_id, floorplan_id),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM floorplan
+                    WHERE site_id = %s AND floorplan_id = %s;
+                    """,
+                    (site_id, floorplan_id),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Floorplan not found")
+
+    return {"ok": True}

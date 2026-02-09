@@ -8,8 +8,9 @@ CREATE TABLE IF NOT EXISTS zones (
     zone_name TEXT NOT NULL,
     x DOUBLE PRECISION,
     y DOUBLE PRECISION,
-    z DOUBLE PRECISION,
+    floor DOUBLE PRECISION,
     audio_id BIGINT,
+    floorplan_id VARCHAR(50),
     PRIMARY KEY (site_id, zone_id)
 );
 
@@ -28,7 +29,7 @@ CREATE TABLE IF NOT EXISTS anchors (
     anchor_name TEXT NOT NULL,
     x DOUBLE PRECISION,
     y DOUBLE PRECISION,
-    z DOUBLE PRECISION,
+    floor DOUBLE PRECISION,
     audio_id BIGINT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (site_id, anchor_id)
@@ -46,6 +47,17 @@ CREATE TABLE IF NOT EXISTS anchor_history (
     PRIMARY KEY (site_id, id),
     CONSTRAINT anchor_history_anchor_fk FOREIGN KEY (site_id, anchor_id)
         REFERENCES anchors(site_id, anchor_id)
+);
+-- Floorplan table for storing floor images
+CREATE TABLE IF NOT EXISTS floorplan (
+    site_id VARCHAR(50) NOT NULL,
+    floorplan_id VARCHAR(50) NOT NULL,
+    floor_name TEXT NOT NULL,
+    image_data BYTEA,
+    image_mime_type TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (site_id, floorplan_id)
 );
 
 -- The State-Tracking Table (partitioned by site_id)
@@ -81,12 +93,12 @@ ON zone_history(site_id, device_id)
 WHERE (end_time IS NULL);
 
 -- Insert sample zones for testing
-INSERT INTO zones (site_id, zone_id, zone_name, x, y, z,audio_id) VALUES
-    ('site-001', 'zone-A', 'Entrance Hall', 0, 0, 0,NULL),
-    ('site-001', 'zone-B', 'Main Office', 10, 0, 0,NULL),
-    ('site-001', 'zone-C', 'Conference Room', 10, 5, 0,NULL),
-    ('site-001', 'zone-D', 'Cafeteria', 0, 5, 0,NULL),
-    ('site-001', 'zone-E', 'Parking Lot', -10, 0, 0,NULL)
+INSERT INTO zones (site_id, zone_id, zone_name, x, y, floor, audio_id, floorplan_id) VALUES
+    ('site-001', 'zone-A', 'Entrance Hall', 0, 0, 0, NULL, NULL),
+    ('site-001', 'zone-B', 'Main Office', 10, 0, 0, NULL, NULL),
+    ('site-001', 'zone-C', 'Conference Room', 10, 5, 0, NULL, NULL),
+    ('site-001', 'zone-D', 'Cafeteria', 0, 5, 0, NULL, NULL),
+    ('site-001', 'zone-E', 'Parking Lot', -10, 0, 0, NULL, NULL)
 ON CONFLICT (site_id, zone_id) DO NOTHING;
 
 -- Insert sample devices for testing
@@ -112,3 +124,4 @@ CREATE TABLE IF NOT EXISTS audio_files (
 -- Index for faster lookups by site
 CREATE INDEX IF NOT EXISTS idx_audio_files_site_id ON audio_files(site_id);
 CREATE INDEX IF NOT EXISTS idx_audio_files_uploaded_at ON audio_files(site_id, uploaded_at DESC);
+

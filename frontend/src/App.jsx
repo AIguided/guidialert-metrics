@@ -32,13 +32,13 @@ export default function App() {
   const [zonesError, setZonesError] = useState(null)
   const [zonesLoading, setZonesLoading] = useState(false)
 
-  const [zoneForm, setZoneForm] = useState({ zoneId: '', zoneName: '', x: '', y: '', z: '', audioId: '' })
+  const [zoneForm, setZoneForm] = useState({ zoneId: '', zoneName: '', x: '', y: '', floor: '', audioId: '', floorplanId: '' })
 
   const [anchors, setAnchors] = useState([])
   const [anchorsError, setAnchorsError] = useState(null)
   const [anchorsLoading, setAnchorsLoading] = useState(false)
 
-  const [anchorForm, setAnchorForm] = useState({ anchorId: '', anchorName: '', x: '', y: '', z: '' })
+  const [anchorForm, setAnchorForm] = useState({ anchorId: '', anchorName: '', x: '', y: '', floor: '' })
 
   const [queryInput, setQueryInput] = useState('')
   const [queryResult, setQueryResult] = useState(null)
@@ -52,14 +52,23 @@ export default function App() {
   const [uploadDescription, setUploadDescription] = useState('')
   const [uploading, setUploading] = useState(false)
 
+  // Floorplan state
+  const [floorplans, setFloorplans] = useState([])
+  const [floorplansError, setFloorplansError] = useState(null)
+  const [floorplansLoading, setFloorplansLoading] = useState(false)
+  const [floorplanForm, setFloorplanForm] = useState({ floorplanId: '', floorName: '' })
+  const [floorplanImage, setFloorplanImage] = useState(null)
+  const [selectedFloorplan, setSelectedFloorplan] = useState(null)
+
   function startEditZone(z) {
     setZoneForm({
       zoneId: z.zoneId ?? '',
       zoneName: z.zoneName ?? '',
       x: z.x ?? '',
       y: z.y ?? '',
-      z: z.z ?? '',
+      floor: z.floor ?? '',
       audioId: z.audioId ?? '',
+      floorplanId: z.floorplanId ?? '',
     })
   }
 
@@ -69,7 +78,7 @@ export default function App() {
       anchorName: a.anchorName ?? '',
       x: a.x ?? '',
       y: a.y ?? '',
-      z: a.z ?? '',
+      floor: a.floor ?? '',
     })
   }
 
@@ -133,8 +142,9 @@ export default function App() {
         zoneName: zoneForm.zoneName.trim(),
         x: parseNum(zoneForm.x),
         y: parseNum(zoneForm.y),
-        z: parseNum(zoneForm.z),
+        floor: parseNum(zoneForm.floor),
         audioId: parseNum(zoneForm.audioId),
+        floorplanId: zoneForm.floorplanId.trim() || null,
       }
       if (!body.zoneId || !body.zoneName) throw new Error('zoneId and zoneName are required')
 
@@ -147,7 +157,7 @@ export default function App() {
         const t = await res.text()
         throw new Error(t || `HTTP ${res.status}`)
       }
-      setZoneForm({ zoneId: '', zoneName: '', x: '', y: '', z: '', audioId: '' })
+      setZoneForm({ zoneId: '', zoneName: '', x: '', y: '', floor: '', audioId: '', floorplanId: '' })
       await loadZones()
       await load()
     } catch (e2) {
@@ -164,10 +174,10 @@ export default function App() {
         anchorName: anchorForm.anchorName.trim(),
         x: parseNum(anchorForm.x),
         y: parseNum(anchorForm.y),
-        z: parseNum(anchorForm.z),
+        floor: parseNum(anchorForm.floor),
       }
       if (!body.anchorId || !body.anchorName) throw new Error('anchorId and anchorName are required')
-      if (body.x == null && body.y == null && body.z == null) throw new Error('at least one of x,y,z is required')
+      if (body.x == null && body.y == null && body.floor == null) throw new Error('at least one of x,y,floor is required')
 
       const res = await fetch('/api/anchors', {
         method: 'POST',
@@ -178,7 +188,7 @@ export default function App() {
         const t = await res.text()
         throw new Error(t || `HTTP ${res.status}`)
       }
-      setAnchorForm({ anchorId: '', anchorName: '', x: '', y: '', z: '' })
+      setAnchorForm({ anchorId: '', anchorName: '', x: '', y: '', floor: '' })
       await loadAnchors()
     } catch (e2) {
       setAnchorsError(String(e2?.message ?? e2))
@@ -297,6 +307,88 @@ export default function App() {
     }
   }
 
+  // Floorplan functions
+  async function loadFloorplans() {
+    setFloorplansLoading(true)
+    setFloorplansError(null)
+    try {
+      const res = await fetch('/api/floorplans')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      setFloorplans(json.items || [])
+    } catch (e) {
+      setFloorplansError(String(e?.message ?? e))
+    } finally {
+      setFloorplansLoading(false)
+    }
+  }
+
+  function startEditFloorplan(f) {
+    setFloorplanForm({
+      floorplanId: f.floorplanId ?? '',
+      floorName: f.floorName ?? '',
+    })
+    setFloorplanImage(null)
+  }
+
+  async function submitFloorplan(e) {
+    e.preventDefault()
+    setFloorplansError(null)
+    try {
+      const floorplanId = floorplanForm.floorplanId.trim()
+      const floorName = floorplanForm.floorName.trim()
+      if (!floorplanId || !floorName) throw new Error('floorplanId and floorName are required')
+
+      const formData = new FormData()
+      formData.append('floorplanId', floorplanId)
+      formData.append('floorName', floorName)
+      if (floorplanImage) {
+        formData.append('image', floorplanImage)
+      }
+
+      const res = await fetch('/api/floorplans', {
+        method: 'POST',
+        body: formData,
+      })
+      if (!res.ok) {
+        const t = await res.text()
+        throw new Error(t || `HTTP ${res.status}`)
+      }
+      setFloorplanForm({ floorplanId: '', floorName: '' })
+      setFloorplanImage(null)
+      await loadFloorplans()
+    } catch (e2) {
+      setFloorplansError(String(e2?.message ?? e2))
+    }
+  }
+
+  async function deleteFloorplan(floorplanId) {
+    if (!confirm(`Delete floorplan "${floorplanId}"?`)) return
+    setFloorplansError(null)
+    try {
+      const res = await fetch(`/api/floorplans/${encodeURIComponent(floorplanId)}`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) {
+        const t = await res.text()
+        throw new Error(t || `HTTP ${res.status}`)
+      }
+      if (selectedFloorplan?.floorplanId === floorplanId) {
+        setSelectedFloorplan(null)
+      }
+      await loadFloorplans()
+      await loadZones() // Reload zones in case floorplan_id was cleared
+    } catch (e2) {
+      setFloorplansError(String(e2?.message ?? e2))
+    }
+  }
+
+  function viewFloorplanImage(f) {
+    if (f.hasImage) {
+      setSelectedFloorplan(f)
+    }
+  }
+
   function formatFileSize(bytes) {
     if (bytes < 1024) return bytes + ' B'
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
@@ -308,6 +400,7 @@ export default function App() {
     loadZones()
     loadAnchors()
     loadAudioFiles()
+    loadFloorplans()
   }, [])
 
   const chart = useMemo(() => {
@@ -384,7 +477,7 @@ export default function App() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Zone Admin</div>
-          <div style={{ fontSize: 12, opacity: 0.8 }}>Add/update zones and set x,y,z coordinates.</div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>Add/update zones and set x,y,floor coordinates.</div>
         </div>
         <button onClick={loadZones} disabled={zonesLoading}>{zonesLoading ? 'Loading…' : 'Refresh zones'}</button>
       </div>
@@ -405,12 +498,13 @@ export default function App() {
         />
         <input placeholder="x" value={zoneForm.x} onChange={(e) => setZoneForm((s) => ({ ...s, x: e.target.value }))} />
         <input placeholder="y" value={zoneForm.y} onChange={(e) => setZoneForm((s) => ({ ...s, y: e.target.value }))} />
-        <input placeholder="z" value={zoneForm.z} onChange={(e) => setZoneForm((s) => ({ ...s, z: e.target.value }))} />
+        <input placeholder="floor" value={zoneForm.floor} onChange={(e) => setZoneForm((s) => ({ ...s, floor: e.target.value }))} />
         <input placeholder="audioId" value={zoneForm.audioId} onChange={(e) => setZoneForm((s) => ({ ...s, audioId: e.target.value }))} />
+        <input placeholder="floorplanId" value={zoneForm.floorplanId} onChange={(e) => setZoneForm((s) => ({ ...s, floorplanId: e.target.value }))} />
         <button type="submit">Save zone</button>
         <button
           type="button"
-          onClick={() => setZoneForm({ zoneId: '', zoneName: '', x: '', y: '', z: '', audioId: '' })}
+          onClick={() => setZoneForm({ zoneId: '', zoneName: '', x: '', y: '', floor: '', audioId: '', floorplanId: '' })}
           style={{ background: '#334155' }}
         >
           Clear
@@ -425,8 +519,9 @@ export default function App() {
               <th style={{ padding: '8px 6px' }}>zoneName</th>
               <th style={{ padding: '8px 6px' }}>x</th>
               <th style={{ padding: '8px 6px' }}>y</th>
-              <th style={{ padding: '8px 6px' }}>z</th>
+              <th style={{ padding: '8px 6px' }}>floor</th>
               <th style={{ padding: '8px 6px' }}>audioId</th>
+              <th style={{ padding: '8px 6px' }}>floorplanId</th>
               <th style={{ padding: '8px 6px' }}></th>
             </tr>
           </thead>
@@ -437,7 +532,7 @@ export default function App() {
                 <td style={{ padding: '8px 6px' }}>{z.zoneName}</td>
                 <td style={{ padding: '8px 6px' }}>{z.x ?? ''}</td>
                 <td style={{ padding: '8px 6px' }}>{z.y ?? ''}</td>
-                <td style={{ padding: '8px 6px' }}>{z.z ?? ''}</td>
+                <td style={{ padding: '8px 6px' }}>{z.floor ?? ''}</td>
                 <td style={{ padding: '8px 6px' }}>
                   {z.audioId ? (
                     <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -458,6 +553,7 @@ export default function App() {
                     '-'
                   )}
                 </td>
+                <td style={{ padding: '8px 6px' }}>{z.floorplanId ?? '-'}</td>
                 <td style={{ padding: '8px 6px' }}>
                   <button
                     type="button"
@@ -499,11 +595,11 @@ export default function App() {
         />
         <input placeholder="x" value={anchorForm.x} onChange={(e) => setAnchorForm((s) => ({ ...s, x: e.target.value }))} />
         <input placeholder="y" value={anchorForm.y} onChange={(e) => setAnchorForm((s) => ({ ...s, y: e.target.value }))} />
-        <input placeholder="z" value={anchorForm.z} onChange={(e) => setAnchorForm((s) => ({ ...s, z: e.target.value }))} />
+        <input placeholder="floor" value={anchorForm.floor} onChange={(e) => setAnchorForm((s) => ({ ...s, floor: e.target.value }))} />
         <button type="submit">Save anchor</button>
         <button
           type="button"
-          onClick={() => setAnchorForm({ anchorId: '', anchorName: '', x: '', y: '', z: '' })}
+          onClick={() => setAnchorForm({ anchorId: '', anchorName: '', x: '', y: '', floor: '' })}
           style={{ background: '#334155' }}
         >
           Clear
@@ -518,7 +614,7 @@ export default function App() {
               <th style={{ padding: '8px 6px' }}>anchorName</th>
               <th style={{ padding: '8px 6px' }}>x</th>
               <th style={{ padding: '8px 6px' }}>y</th>
-              <th style={{ padding: '8px 6px' }}>z</th>
+              <th style={{ padding: '8px 6px' }}>floor</th>
               <th style={{ padding: '8px 6px' }}>updated</th>
               <th style={{ padding: '8px 6px' }}></th>
             </tr>
@@ -530,7 +626,7 @@ export default function App() {
                 <td style={{ padding: '8px 6px' }}>{a.anchorName}</td>
                 <td style={{ padding: '8px 6px' }}>{a.x ?? ''}</td>
                 <td style={{ padding: '8px 6px' }}>{a.y ?? ''}</td>
-                <td style={{ padding: '8px 6px' }}>{a.z ?? ''}</td>
+                <td style={{ padding: '8px 6px' }}>{a.floor ?? ''}</td>
                 <td style={{ padding: '8px 6px' }}>{a.updatedAt ? new Date(a.updatedAt).toLocaleString() : ''}</td>
                 <td style={{ padding: '8px 6px' }}>
                   <button
@@ -741,6 +837,119 @@ export default function App() {
           )}
         </div>
       </div>
+
+      <hr style={{ border: 'none', borderTop: '1px solid #223055', margin: '18px 0' }} />
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Floorplan Admin</div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>Upload floorplan images. Click a row to view the image.</div>
+        </div>
+        <button onClick={loadFloorplans} disabled={floorplansLoading}>{floorplansLoading ? 'Loading…' : 'Refresh floorplans'}</button>
+      </div>
+
+      {floorplansError && <div className="err">Floorplans error: {floorplansError}</div>}
+
+      <form onSubmit={submitFloorplan} style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input
+          placeholder="floorplanId (e.g. floor-1)"
+          value={floorplanForm.floorplanId}
+          onChange={(e) => setFloorplanForm((s) => ({ ...s, floorplanId: e.target.value }))}
+        />
+        <input
+          placeholder="floorName"
+          value={floorplanForm.floorName}
+          onChange={(e) => setFloorplanForm((s) => ({ ...s, floorName: e.target.value }))}
+          style={{ minWidth: 180 }}
+        />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', background: '#334155', padding: '6px 12px', borderRadius: 6 }}>
+          <span>{floorplanImage ? floorplanImage.name : 'Choose image...'}</span>
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            onChange={(e) => setFloorplanImage(e.target.files?.[0] || null)}
+            style={{ display: 'none' }}
+          />
+        </label>
+        <button type="submit">Save floorplan</button>
+        <button
+          type="button"
+          onClick={() => { setFloorplanForm({ floorplanId: '', floorName: '' }); setFloorplanImage(null) }}
+          style={{ background: '#334155' }}
+        >
+          Clear
+        </button>
+      </form>
+
+      <div style={{ marginTop: 12, overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.9 }}>
+              <th style={{ padding: '8px 6px' }}>floorplanId</th>
+              <th style={{ padding: '8px 6px' }}>floorName</th>
+              <th style={{ padding: '8px 6px' }}>hasImage</th>
+              <th style={{ padding: '8px 6px' }}>updated</th>
+              <th style={{ padding: '8px 6px' }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(floorplans || []).map((f) => (
+              <tr
+                key={`${f.siteId}:${f.floorplanId}`}
+                style={{
+                  borderTop: '1px solid #223055',
+                  cursor: f.hasImage ? 'pointer' : 'default',
+                  background: selectedFloorplan?.floorplanId === f.floorplanId ? '#1e3a5f' : 'transparent',
+                }}
+                onClick={() => viewFloorplanImage(f)}
+              >
+                <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>{f.floorplanId}</td>
+                <td style={{ padding: '8px 6px' }}>{f.floorName}</td>
+                <td style={{ padding: '8px 6px' }}>{f.hasImage ? 'Yes' : 'No'}</td>
+                <td style={{ padding: '8px 6px' }}>{f.updatedAt ? new Date(f.updatedAt).toLocaleString() : ''}</td>
+                <td style={{ padding: '8px 6px', display: 'flex', gap: 6 }}>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); startEditFloorplan(f) }}
+                    style={{ background: '#22c55e' }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); deleteFloorplan(f.floorplanId) }}
+                    style={{ background: '#ef4444' }}
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {selectedFloorplan && (
+        <div style={{ marginTop: 16, padding: 12, background: '#1e293b', borderRadius: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>
+              {selectedFloorplan.floorName} ({selectedFloorplan.floorplanId})
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedFloorplan(null)}
+              style={{ background: '#64748b', padding: '4px 10px', fontSize: 12 }}
+            >
+              Close
+            </button>
+          </div>
+          <img
+            src={`/api/floorplans/${encodeURIComponent(selectedFloorplan.floorplanId)}/image`}
+            alt={selectedFloorplan.floorName}
+            style={{ maxWidth: '100%', maxHeight: 500, borderRadius: 6, display: 'block' }}
+          />
+        </div>
+      )}
     </div>
   )
 }
