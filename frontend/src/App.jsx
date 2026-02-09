@@ -273,6 +273,25 @@ export default function App() {
         throw new Error(text || `HTTP ${res.status}`)
       }
       await loadAudioFiles()
+      await loadZones() // Reload zones in case audio_id was cleared
+    } catch (e) {
+      setAudioError(String(e?.message ?? e))
+    }
+  }
+
+  async function cleanupOrphanedAudio() {
+    setAudioError(null)
+    try {
+      const res = await fetch('/api/audio/cleanup-orphaned', {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || `HTTP ${res.status}`)
+      }
+      const json = await res.json()
+      alert(`Cleaned ${json.cleanedCount} orphaned audio reference(s)${json.cleanedZones.length > 0 ? `: ${json.cleanedZones.join(', ')}` : ''}`)
+      await loadZones()
     } catch (e) {
       setAudioError(String(e?.message ?? e))
     }
@@ -618,7 +637,14 @@ export default function App() {
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Audio Files</div>
             <div style={{ fontSize: 12, opacity: 0.8 }}>Upload and manage audio files (.mp3, .wav)</div>
           </div>
-          <button onClick={loadAudioFiles} disabled={audioLoading}>{audioLoading ? 'Loading...' : 'Refresh'}</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={cleanupOrphanedAudio} style={{ background: '#f59e0b' }}>
+              Clean Orphaned
+            </button>
+            <button onClick={loadAudioFiles} disabled={audioLoading}>
+              {audioLoading ? 'Loading...' : 'Refresh'}
+            </button>
+          </div>
         </div>
 
         {audioError && <div className="err">Audio error: {audioError}</div>}
