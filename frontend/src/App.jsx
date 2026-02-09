@@ -445,6 +445,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => {
+                          // Play audio in a new Audio context to avoid browser restrictions on autoplay in certain cases
                           const audio = new Audio(`/api/audio/${z.audioId}`)
                           audio.play()
                         }}
